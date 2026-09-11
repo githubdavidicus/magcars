@@ -1,0 +1,393 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, collection, addDoc, onSnapshot, query, where, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { Map, View } from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol.js'; 
+import TileLayer from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/layer/Tile.js';
+import OSM from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/source/OSM.js';
+import VectorLayer from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/layer/Vector.js';
+import VectorSource from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/source/Vector.js';
+import { fromLonLat } from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/proj.js';
+import Feature from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/Feature.js';
+import Point from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/geom/Point.js';
+import Style from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/style/Style.js';
+import Circle from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/style/Circle.js';
+import Fill from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/style/Fill.js';
+import Stroke from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/style/Stroke.js';
+import {getDistance} from 'https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol/sphere.js';
+
+// The entire application logic is now wrapped in a window.onload event listener.
+// This ensures that the code waits for the full page, including the 'map' div, to be loaded
+// before attempting to initialize the map or access any DOM elements.
+window.onload = () => {
+
+    // Get DOM elements
+    const statusMessageEl = document.getElementById('statusMessage');
+    const userIdDisplayEl = document.getElementById('userIdDisplay');
+    const recordFlightBtn = document.getElementById('recordFlightBtn');
+    const rightSideContainer = document.getElementById('rightSideContainer');
+    const currentFlightWindow = document.getElementById('currentFlightWindow');
+    const pastFlightsIconBtn = document.getElementById('pastFlightsIconBtn');
+    const pastFlightsWindow = document.getElementById('pastFlightsWindow');
+    const closePastFlightsBtn = document.getElementById('closePastFlightsBtn');
+    const showPastFlightsBtn = document.getElementById('showPastFlightsBtn');
+    const pastFlightsList = document.getElementById('pastFlightsList');
+    const aircraftIconBtn = document.getElementById('aircraftIconBtn');
+    const aircraftWindow = document.getElementById('aircraftWindow');
+    const closeAircraftBtn = document.getElementById('closeAircraftBtn');
+    const bookFlightIconBtn = document.getElementById('bookFlightIconBtn');
+    const bookFlightWindow = document.getElementById('bookFlightWindow');
+    const closeBookFlightBtn = document.getElementById('closeBookFlightBtn');
+    const flightSearchInput = document.getElementById('flightSearchInput');
+    const flightScheduleList = document.getElementById('flightScheduleList');
+    const weatherIconBtn = document.getElementById('weatherIconBtn');
+    const weatherWindow = document.getElementById('weatherWindow');
+    const closeWeatherBtn = document.getElementById('closeWeatherBtn');
+    const icaoInput = document.getElementById('icaoInput');
+    const getWeatherBtn = document.getElementById('getWeatherBtn');
+    const weatherDisplay = document.getElementById('weatherDisplay');
+
+    // Geolocation display elements
+    const depDisplay = document.getElementById('depDisplay');
+    const destDisplay = document.getElementById('destDisplay');
+    const regDisplay = document.getElementById('regDisplay');
+    const altDisplay = document.getElementById('altDisplay');
+    const speedDisplay = document.getElementById('speedDisplay');
+    
+    // --- Firebase & Authentication Setup ---
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+    let userId = null;
+    let isAuthReady = false;
+
+    onAuthStateChanged(auth, async (user) => {
+        if (user) {
+            userId = user.uid;
+            isAuthReady = true;
+            userIdDisplayEl.textContent = `User: ${userId.substring(0, 8)}...`;
+        } else {
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase auth error:", error);
+                userIdDisplayEl.textContent = "Auth Error";
+            }
+        }
+    });
+
+    // --- Geolocation Tracking ---
+    let lastPosition = null;
+    let flightPath = [];
+    let isRecording = false;
+
+    if ('geolocation' in navigator) {
+        navigator.geolocation.watchPosition(
+            (position) => {
+                const { latitude, longitude, altitude, speed } = position.coords;
+                const coords = [longitude, latitude];
+                const lonLat = fromLonLat(coords);
+
+                // Update map view and location marker
+                myLocationFeature.getGeometry().setCoordinates(lonLat);
+                map.getView().setCenter(lonLat);
+                map.getView().setZoom(12);
+                statusMessageEl.textContent = 'Location tracking active.';
+                
+                // Update current flight window
+                depDisplay.textContent = `Departure: ${coords[0].toFixed(2)}, ${coords[1].toFixed(2)}`;
+                destDisplay.textContent = `Destination: N/A`;
+                regDisplay.textContent = `Registration: N/A`;
+                altDisplay.textContent = `Altitude: ${altitude ? altitude.toFixed(0) + ' m' : 'N/A'}`;
+                speedDisplay.textContent = `Speed: ${speed ? (speed * 3.6).toFixed(0) + ' km/h' : 'N/A'}`;
+
+                // Check for flight recording
+                if (isRecording) {
+                    const newPosition = {
+                        coords: { latitude, longitude, altitude, speed },
+                        timestamp: position.timestamp
+                    };
+                    
+                    // Only add if position has changed significantly
+                    if (!lastPosition || getDistance(fromLonLat([lastPosition.coords.longitude, lastPosition.coords.latitude]), lonLat) > 10) {
+                        flightPath.push(newPosition);
+                        lastPosition = newPosition;
+                        statusMessageEl.textContent = `Recording flight... Points: ${flightPath.length}`;
+                    }
+                }
+            },
+            (error) => {
+                console.error("Geolocation error:", error);
+                statusMessageEl.textContent = "Geolocation error: " + error.message;
+            },
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        );
+    } else {
+        statusMessageEl.textContent = "Geolocation is not supported by your browser.";
+    }
+
+    // --- UI Interactions ---
+
+    // Handle icon container mouse events
+    const iconContainer = document.getElementById('iconContainer');
+    iconContainer.addEventListener('mouseenter', () => {
+        iconContainer.classList.remove('translate-x-full');
+    });
+    iconContainer.addEventListener('mouseleave', () => {
+        iconContainer.classList.add('translate-x-full');
+    });
+
+    // Record flight button logic
+    recordFlightBtn.addEventListener('click', async () => {
+        if (isRecording) {
+            isRecording = false;
+            recordFlightBtn.textContent = 'Record Current Flight';
+            recordFlightBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
+            recordFlightBtn.classList.add('bg-sky-400', 'hover:bg-sky-500');
+            statusMessageEl.textContent = 'Flight recording stopped.';
+
+            // Save flight data to Firestore
+            if (isAuthReady && flightPath.length > 0) {
+                try {
+                    const flightData = {
+                        userId: userId,
+                        flightPath: JSON.stringify(flightPath),
+                        recordedAt: Timestamp.now(),
+                    };
+                    const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${userId}/pastFlights`), flightData);
+                    console.log("Document written with ID: ", docRef.id);
+                    statusMessageEl.textContent = `Flight saved! ID: ${docRef.id}`;
+                } catch (e) {
+                    console.error("Error adding document: ", e);
+                    statusMessageEl.textContent = "Error saving flight.";
+                }
+            } else {
+                statusMessageEl.textContent = "No flight data to save or not authenticated.";
+            }
+
+            flightPath = []; // Reset flight path
+        } else {
+            isRecording = true;
+            flightPath = [];
+            recordFlightBtn.textContent = 'Stop Recording';
+            recordFlightBtn.classList.remove('bg-sky-400', 'hover:bg-sky-500');
+            recordFlightBtn.classList.add('bg-red-500', 'hover:bg-red-600');
+            statusMessageEl.textContent = 'Recording flight...';
+        }
+    });
+
+    // Toggle slide-over windows
+    const toggleWindow = (windowEl, openBtnEl, closeBtnEl) => {
+        const showWindow = () => {
+            windowEl.classList.remove('translate-x-full');
+        };
+        const hideWindow = () => {
+            windowEl.classList.add('translate-x-full');
+        };
+        if (openBtnEl) {
+            openBtnEl.addEventListener('click', showWindow);
+        }
+        if (closeBtnEl) {
+            closeBtnEl.addEventListener('click', hideWindow);
+        }
+    };
+
+    toggleWindow(pastFlightsWindow, pastFlightsIconBtn, closePastFlightsBtn);
+    toggleWindow(aircraftWindow, aircraftIconBtn, closeAircraftBtn);
+    toggleWindow(bookFlightWindow, bookFlightIconBtn, closeBookFlightBtn);
+    toggleWindow(weatherWindow, weatherIconBtn, closeWeatherBtn);
+
+    // Fetch past flights from Firestore
+    showPastFlightsBtn.addEventListener('click', async () => {
+        if (!isAuthReady) {
+            pastFlightsList.innerHTML = '<li class="text-sm text-gray-300 p-2 border border-gray-600 rounded-lg text-center shadow-sm">Please wait for authentication...</li>';
+            return;
+        }
+
+        pastFlightsList.innerHTML = '<li class="text-sm text-gray-300 p-2 border border-gray-600 rounded-lg text-center shadow-sm">Loading past flights...</li>';
+        try {
+            const q = query(collection(db, `artifacts/${appId}/users/${userId}/pastFlights`));
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                if (snapshot.empty) {
+                    pastFlightsList.innerHTML = '<li class="text-sm text-gray-300 p-2 border border-gray-600 rounded-lg text-center shadow-sm">No past flights found.</li>';
+                    return;
+                }
+                pastFlightsList.innerHTML = '';
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const flightPathData = JSON.parse(data.flightPath);
+                    const startPoint = flightPathData[0];
+                    const endPoint = flightPathData[flightPathData.length - 1];
+                    
+                    const li = document.createElement('li');
+                    li.className = 'text-sm text-gray-200 p-3 bg-gray-700 hover:bg-gray-600 rounded-lg shadow-sm cursor-pointer transition-colors duration-200';
+                    li.innerHTML = `
+                        <div class="font-bold text-sky-400">Flight ID: ${doc.id.substring(0, 8)}...</div>
+                        <div>Start: ${startPoint.coords.latitude.toFixed(4)}, ${startPoint.coords.longitude.toFixed(4)}</div>
+                        <div>End: ${endPoint.coords.latitude.toFixed(4)}, ${endPoint.coords.longitude.toFixed(4)}</div>
+                        <div class="text-xs text-gray-400 mt-1">Recorded at: ${data.recordedAt.toDate().toLocaleString()}</div>
+                    `;
+                    li.addEventListener('click', () => {
+                        // Fly to the start of the flight
+                        const startLonLat = fromLonLat([startPoint.coords.longitude, startPoint.coords.latitude]);
+                        map.getView().animate({
+                            center: startLonLat,
+                            zoom: 12,
+                            duration: 1000
+                        });
+                    });
+                    pastFlightsList.appendChild(li);
+                });
+            });
+        } catch (error) {
+            console.error("Error fetching past flights:", error);
+            pastFlightsList.innerHTML = `<li class="text-sm text-red-400 p-2 border border-red-600 rounded-lg text-center shadow-sm">Error loading flights: ${error.message}</li>`;
+        }
+    });
+
+    // Search flights button logic
+    flightSearchInput.addEventListener('input', async (e) => {
+        const searchTerm = e.target.value.toLowerCase().trim();
+        if (searchTerm.length < 3) {
+            flightScheduleList.innerHTML = '<li class="text-sm text-gray-300 p-2 border border-gray-600 rounded-lg text-center shadow-sm">Search for a flight to see results.</li>';
+            return;
+        }
+
+        flightScheduleList.innerHTML = '<li class="text-sm text-gray-300 p-2 border border-gray-600 rounded-lg text-center shadow-sm">Searching...</li>';
+
+        try {
+            // Example of a search. In a real-world app, you'd query a database or API.
+            // For this example, we'll simulate a search result.
+            const mockFlights = [
+                { flight: 'BA249', dep: 'EGLL', dest: 'GIG', time: '10:30' },
+                { flight: 'UA975', dep: 'ORD', dest: 'MUC', time: '12:00' },
+                { flight: 'AF116', dep: 'CDG', dest: 'LHR', time: '14:45' },
+                { flight: 'MAG123', dep: 'MUC', dest: 'JFK', time: '16:00' }
+            ];
+
+            const filteredFlights = mockFlights.filter(flight => 
+                flight.flight.toLowerCase().includes(searchTerm) ||
+                flight.dep.toLowerCase().includes(searchTerm) ||
+                flight.dest.toLowerCase().includes(searchTerm)
+            );
+            
+            if (filteredFlights.length === 0) {
+                flightScheduleList.innerHTML = '<li class="text-sm text-gray-300 p-2 border border-gray-600 rounded-lg text-center shadow-sm">No flights found.</li>';
+                return;
+            }
+
+            flightScheduleList.innerHTML = '';
+            filteredFlights.forEach(flight => {
+                const li = document.createElement('li');
+                li.className = 'text-sm text-gray-200 p-3 bg-gray-700 hover:bg-gray-600 rounded-lg shadow-sm transition-colors duration-200';
+                li.innerHTML = `
+                    <div class="font-bold text-sky-400">${flight.flight}</div>
+                    <div>${flight.dep} &rarr; ${flight.dest}</div>
+                    <div class="text-xs text-gray-400 mt-1">Scheduled: ${flight.time}</div>
+                `;
+                flightScheduleList.appendChild(li);
+            });
+
+        } catch (error) {
+            console.error("Error searching flights:", error);
+            flightScheduleList.innerHTML = `<li class="text-sm text-red-400 p-2 border border-red-600 rounded-lg text-center shadow-sm">Error searching flights.</li>`;
+        }
+    });
+
+    // --- OpenLayers Map Initialization ---
+    const map = new Map({
+        target: 'map',
+        layers: [
+            new TileLayer({
+                source: new OSM()
+            })
+        ],
+        view: new View({
+            center: fromLonLat([0, 0]),
+            zoom: 2
+        })
+    });
+
+    const vectorSource = new VectorSource();
+    const vectorLayer = new VectorLayer({
+        source: vectorSource,
+        style: new Style({
+            image: new Circle({
+                radius: 6,
+                fill: new Fill({
+                    color: 'rgba(255, 0, 0, 0.6)'
+                }),
+                stroke: new Stroke({
+                    color: 'rgba(255, 255, 255, 0.8)',
+                    width: 2
+                })
+            })
+        })
+    });
+    map.addLayer(vectorLayer);
+
+    let myLocationFeature = new Feature({
+        geometry: new Point(fromLonLat([0, 0]))
+    });
+    vectorSource.addFeature(myLocationFeature);
+
+    // Weather button logic
+    getWeatherBtn.addEventListener('click', async () => {
+        const icao = icaoInput.value.trim().toUpperCase();
+        if (icao.length !== 4) {
+            weatherDisplay.innerHTML = '<div class="text-center text-red-400">Please enter a valid 4-letter ICAO code.</div>';
+            return;
+        }
+
+        weatherDisplay.innerHTML = '<div class="text-center text-gray-400">Fetching weather data...</div>';
+
+        try {
+            // Use a proxy to avoid CORS issues
+            const proxyUrl = 'https://cors-anywhere.herokuapp.com/'; 
+            const url = `https://api.checkwx.com/metar/${icao}/decoded`;
+            
+            const response = await fetch(proxyUrl + url, {
+                headers: { 'X-Api-Key': 'YOUR_API_KEY_HERE' } // You would need a valid API key for this to work
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.data && data.data.length > 0) {
+                const metar = data.data[0];
+                weatherDisplay.innerHTML = `
+                    <div class="bg-gray-800 p-4 rounded-lg shadow-md">
+                        <h3 class="text-xl font-bold text-white mb-2">${metar.station.name} (${metar.station.icao})</h3>
+                        <p class="text-gray-300"><strong>Raw METAR:</strong> ${metar.raw_text}</p>
+                        <hr class="my-2 border-gray-700">
+                        <ul class="space-y-1">
+                            <li><strong>Report Time:</strong> ${new Date(metar.observed).toLocaleString()}</li>
+                            <li><strong>Conditions:</strong> ${metar.conditions ? metar.conditions.join(', ') : 'N/A'}</li>
+                            <li><strong>Temperature:</strong> ${metar.temperature.fahrenheit}°F (${metar.temperature.celsius}°C)</li>
+                            <li><strong>Dewpoint:</strong> ${metar.dewpoint.fahrenheit}°F (${metar.dewpoint.celsius}°C)</li>
+                            <li><strong>Wind:</strong> ${metar.wind.degrees}° at ${metar.wind.speed_kts} knots</li>
+                            <li><strong>Visibility:</strong> ${metar.visibility.miles} miles</li>
+                            <li><strong>Altimeter:</strong> ${metar.barometer.hg} inHg</li>
+                        </ul>
+                    </div>
+                `;
+            } else {
+                weatherDisplay.innerHTML = '<div class="text-center text-gray-400">METAR data not available for this ICAO.</div>';
+            }
+
+        } catch (error) {
+            console.error("Error fetching weather:", error);
+            weatherDisplay.innerHTML = `<div class="text-center text-red-400">Failed to fetch weather data. Please check the ICAO code.</div>`;
+        }
+    });
+};

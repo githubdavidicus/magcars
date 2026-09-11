@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MAG ACARS</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol.css"
+    />
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: rgb(31, 41, 55);
+        min-height: 100vh;
+        overflow: hidden;
+      }
+      #map {
+        width: 100vw;
+        height: 100vh;
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 0;
+      }
+      .past-flights-list,
+      .flight-schedule-list,
+      .aircraft-info-list,
+      .weather-info-display {
+        max-height: 60vh;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
+      .past-flights-list::-webkit-scrollbar,
+      .flight-schedule-list::-webkit-scrollbar,
+      .aircraft-info-list::-webkit-scrollbar,
+      .weather-info-display::-webkit-scrollbar {
+        width: 8px;
+      }
+      .past-flights-list::-webkit-scrollbar-thumb,
+      .flight-schedule-list::-webkit-scrollbar-thumb,
+      .aircraft-info-list::-webkit-scrollbar-thumb,
+      .weather-info-display::-webkit-scrollbar-thumb {
+        background-color: rgb(107, 114, 128);
+        border-radius: 4px;
+      }
+      .bg-custom-blue {
+        background-color: #0094ff;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-700 min-h-screen relative">
+    <!-- Map element that fills the entire viewport -->
+    <div id="map"></div>
+
+    <!-- Persistent Header -->
+    <div
+      class="fixed top-0 left-0 right-0 z-20 bg-custom-blue text-white py-4 px-8 shadow-lg flex justify-between items-center"
+    >
+      <h1 class="text-3xl sm:text-4xl font-extrabold">MAGCARS</h1>
+      <div id="userIdDisplay" class="font-mono text-xs sm:text-sm text-white">
+        Authenticating...
+      </div>
+    </div>
+
+    <!-- Main UI Container for all elements overlaid on the map -->
+    <div
+      class="fixed top-16 left-0 right-0 bottom-0 z-10 pointer-events-none p-4 sm:p-8 flex flex-col items-center"
+    >
+      <!-- Floating Windows -->
+      <div class="w-full flex-1 flex justify-between items-end">
+        <!-- Left side container for cog and current flight windows -->
+        <div class="flex flex-col items-start space-y-4 pointer-events-auto">
+          <!-- Cog Icon & Filter Pop-up Container -->
+          <div id="settingsContainer" class="relative group">
+            <button
+              id="settingsBtn"
+              class="p-3 bg-gray-600/70 backdrop-blur-sm text-white rounded-full transition-colors duration-200 hover:bg-sky-400"
+            >
+              <!-- svg omitted for brevity; original content preserved in repo -->
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-6 w-6"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path
+                  d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2h-2a2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2v-2a2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001.51-1V3a2 2 0 012-2h2a2 2 0 012 2v.09A1.65 1.65 0 0015 4.6a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2v2a2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"
+                />
+              </svg>
+            </button>
+            <div
+              id="filterPopUp"
+              class="absolute bottom-full mb-2 left-0 p-4 bg-gray-700/80 backdrop-blur-md rounded-lg border border-gray-600 shadow-xl opacity-0 transition-all duration-300 transform scale-95 origin-bottom-left group-hover:opacity-100 group-hover:scale-100 pointer-events-none group-hover:pointer-events-auto"
+            >
+              <h3 class="text-sm font-semibold text-white mb-2">
+                Display Flights
+              </h3>
+              <div class="flex flex-col space-y-2 text-sm text-gray-100">
+                <label class="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    name="flightFilter"
+                    value="allMAGCARS"
+                    class="h-4 w-4 rounded text-sky-400 focus:ring-sky-500"
+                    checked
+                  />
+                  <span>All MAGCARS Users</span>
+                </label>
+                <label class="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    name="flightFilter"
+                    value="allMAG"
+                    class="h-4 w-4 rounded text-sky-400 focus:ring-sky-500"
+                  />
+                  <span>All MAG flights</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Current Flight Floating Window -->
+          <div
+            id="currentFlightWindow"
+            class="p-4 bg-sky-700/50 backdrop-blur-sm rounded-lg border border-sky-600 shadow-md hidden sm:block"
+          >
+            <h3 class="text-sm font-semibold text-white mb-2">
+              Current Flight
+            </h3>
+            <div class="text-xs text-gray-100 space-y-1">
+              <div id="depDisplay">
+                <span class="font-semibold">Departure:</span> N/A
+              </div>
+              <div id="destDisplay">
+                <span class="font-semibold">Destination:</span> N/A
+              </div>
+              <div id="regDisplay">
+                <span class="font-semibold">Registration:</span> N/A
+              </div>
+              <div class="flex items-center space-x-2 mt-2">
+                <input
+                  id="followAircraftToggle"
+                  type="checkbox"
+                  checked
+                  class="h-4 w-4 text-sky-400 rounded focus:ring-sky-500"
+                />
+                <label for="followAircraftToggle" class="text-sm text-gray-200"
+                  >Follow aircraft (auto-center)</label
+                >
+                <button
+                  id="centerAircraftBtn"
+                  title="Center map on aircraft"
+                  class="ml-3 px-2 py-1 bg-sky-500 hover:bg-sky-600 text-white text-xs rounded"
+                >
+                  Center
+                </button>
+              </div>
+              <hr class="my-2 border-sky-600" />
+              <div id="altDisplay">
+                <span class="font-semibold">Altitude:</span> N/A
+              </div>
+              <div id="speedDisplay">
+                <span class="font-semibold">Speed:</span> N/A
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right side container for record flight button -->
+        <div
+          id="rightSideContainer"
+          class="flex flex-col items-end space-y-4 pointer-events-auto transition-transform duration-300 ease-in-out"
+        >
+          <!-- Record Flight Floating Window -->
+          <div
+            id="recordFlightWindow"
+            class="p-4 bg-gray-700/50 backdrop-blur-sm rounded-lg border border-gray-600 shadow-md"
+          >
+            <button
+              id="recordFlightBtn"
+              class="w-full px-4 py-2 bg-sky-400 hover:bg-sky-500 text-white font-semibold rounded-full transition duration-300 transform hover:scale-105"
+            >
+              Record Current Flight
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status Message at the bottom -->
+      <div class="w-full text-center mt-6 pointer-events-auto">
+        <div
+          id="statusMessage"
+          class="inline-block px-4 py-2 bg-gray-600/50 backdrop-blur-md text-sm text-gray-300 rounded-lg shadow-lg"
+        >
+          Waiting for location data...
+        </div>
+      </div>
+    </div>
+
+    <!-- OpenLayers JS -->
+    <script src="https://cdn.jsdelivr.net/npm/ol@v8.2.0/dist/ol.js"></script>
+
+    <!-- Client JavaScript (extracted) -->
+    <script type="module" src="./client.js"></script>
+  </body>
+</html>
